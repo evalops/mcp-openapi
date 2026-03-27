@@ -53,6 +53,30 @@ OpenAPI 3.x to MCP server bridge in TypeScript.
 npm install
 ```
 
+Consume as a library from GitHub:
+
+```bash
+npm install github:haasonsaas/mcp-openapi
+```
+
+## Library Usage
+
+```ts
+import { parseSpec, generateToolsWithTags } from "mcp-openapi";
+
+const normalized = await parseSpec("./openapi.yaml");
+const generated = generateToolsWithTags(normalized, { prefix: "github" });
+
+console.log(generated.tools[0]?.name);
+```
+
+The library entrypoint exports:
+
+- `parseSpec`
+- `generateTools`
+- `generateToolsWithTags`
+- `NormalizedSpec`
+
 ## Run
 
 ### stdio
