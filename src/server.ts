@@ -881,7 +881,7 @@ function buildGateConnectorYaml(upstreamPort: number, resourceName: string, hasP
   lines.push(
     "",
     "recording:",
-    "  dir: \".data/gate-mcp-recordings\"",
+    "  dir: \"../.data/gate-mcp-recordings\"",
     "",
     "logging:",
     "  level: \"info\"",
