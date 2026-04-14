@@ -42,6 +42,7 @@ test("generate command creates project files", async () => {
   assert.match(gateReadme, /Point your MCP client at Gate/);
   assert.match(gateConnector, /protocol: "mcp"/);
   assert.match(gateConnector, /path: "policies\/mcp_tool_allowlist\.rego"/);
+  assert.match(gateConnector, /dir: "\.\.\/\.data\/gate-mcp-recordings"/);
   assert.match(gatePolicy, /approved_tools/);
   assert.match(gatePolicy, /getHealth/);
   assert.match(gatePolicy, /postEcho/);
@@ -61,4 +62,5 @@ test("init command creates Gate scaffold files", async () => {
 
   assert.match(gateReadme, /Gate MCP Gateway/);
   assert.match(gateConnector, /endpoint_path: "\/mcp"/);
+  assert.match(gateConnector, /dir: "\.\.\/\.data\/gate-mcp-recordings"/);
 });
