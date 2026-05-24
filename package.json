@@ -25,7 +25,8 @@
     "prepare": "npm run build",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "smoke": "npm run build && tsx scripts/smoke.ts"
+    "smoke": "npm run build && tsx scripts/smoke.ts",
+    "mcp:inspect": "npx -y @modelcontextprotocol/inspector@0.15.0 --cli node dist/server.js --spec test/fixtures/sample-openapi.yaml --method tools/list"
   },
   "engines": {
     "node": ">=18"
