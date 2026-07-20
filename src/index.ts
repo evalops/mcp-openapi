@@ -201,7 +201,7 @@ function operationToEndpoint(op: OperationModel): NormalizedEndpoint {
     ? op.authOptions.map((req) => {
         const entry: SecurityRequirement = {};
         for (const scheme of req.schemes) {
-          entry[scheme.name] = [];
+          entry[scheme.key ?? scheme.name] = [];
         }
         return entry;
       })

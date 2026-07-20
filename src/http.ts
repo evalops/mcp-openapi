@@ -414,7 +414,8 @@ async function applyAuth(headers: Record<string, string>, url: URL, cookieParams
   const selected = authOptions[0];
   const envPrefix = resolveEnvPrefix(tags, authScopes);
   for (const scheme of selected.schemes) {
-    const keyByName = process.env[`${envPrefix}${scheme.name.toUpperCase()}_TOKEN`];
+    const credentialName = scheme.key ?? scheme.name;
+    const keyByName = process.env[`${envPrefix}${credentialName.toUpperCase()}_TOKEN`];
 
     if (scheme.type === "apiKey") {
       const token = keyByName ?? process.env[`${envPrefix}API_KEY`];

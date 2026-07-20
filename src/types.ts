@@ -15,6 +15,7 @@ export interface CompileOptions {
 }
 
 export interface SecurityScheme {
+  key?: string;
   name: string;
   type: string;
   in?: "query" | "header" | "cookie";

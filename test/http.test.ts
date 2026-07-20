@@ -234,6 +234,48 @@ test("executeOperation supports apiKey auth in header, query, and cookie", async
   });
 });
 
+test("executeOperation separates apiKey identity from its wire name", async () => {
+  await withEnv(
+    {
+      MCP_OPENAPI_APIKEY_TOKEN: "component-token",
+      MCP_OPENAPI_API_KEY: undefined
+    },
+    async () => {
+      let wireHeader = "";
+      let componentHeader = "";
+      const server = createServer((req, res) => {
+        wireHeader = String(req.headers["x-api-key"] ?? "");
+        componentHeader = String(req.headers.apikey ?? "");
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true }));
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const result = await executeOperation(
+        createOperation(baseUrl, {
+          authOptions: [
+            {
+              schemes: [{ key: "apiKey", name: "x-api-key", type: "apiKey", in: "header" }]
+            }
+          ]
+        }),
+        { query: {} },
+        { timeoutMs: 5000, retries: 0, retryDelayMs: 5 }
+      );
+
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+
+      assert.equal(result.status, 200);
+      assert.equal(wireHeader, "component-token");
+      assert.equal(componentHeader, "");
+    }
+  );
+});
+
 test("executeOperation supports bearer and basic auth", async () => {
   await withEnv(
     {

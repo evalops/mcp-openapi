@@ -5,7 +5,7 @@ import { compileOperations } from "./compiler.js";
 import { loadOpenApiDocument } from "./openapi.js";
 import type { CompileOptions, OperationModel } from "./types.js";
 
-const CACHE_FORMAT_VERSION = 2;
+const CACHE_FORMAT_VERSION = 3;
 
 interface CacheEntry {
   hash: string;

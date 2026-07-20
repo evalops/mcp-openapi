@@ -672,7 +672,8 @@ function getSecuritySchemes(doc: Record<string, unknown>): Record<string, Securi
       continue;
     }
     out[name] = {
-      name,
+      key: name,
+      name: scheme.type === "apiKey" && typeof scheme.name === "string" ? scheme.name : name,
       type: String(scheme.type),
       in: isValidIn(scheme.in) ? scheme.in : undefined,
       scheme: typeof scheme.scheme === "string" ? scheme.scheme : undefined,
