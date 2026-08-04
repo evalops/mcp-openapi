@@ -25,8 +25,10 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import {
   CallToolRequestSchema,
   ErrorCode,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
   McpError,
+  ReadResourceRequestSchema,
   type LoggingLevel
 } from "@modelcontextprotocol/sdk/types.js";
 import { executeOperation } from "./http.js";
@@ -55,9 +57,19 @@ interface CompiledValidators {
   responsesByStatus: Map<string, Map<string, Validator>>;
 }
 
+interface SpecResource {
+  name: string;
+  path: string;
+  title: string;
+  version: string;
+  doc: Record<string, unknown>;
+  toolNames: string[];
+}
+
 interface RuntimeState {
   operations: Map<string, OperationModel>;
   validators: CompiledValidators;
+  specDocs: SpecResource[];
 }
 
 interface SpecRef {
@@ -177,8 +189,53 @@ async function main(): Promise<void> {
 function createMcpServer(state: RuntimeState, cli: CliOptions): Server {
   const mcpServer = new Server(
     { name: "mcp-openapi", version: PKG_VERSION },
-    { capabilities: { tools: { listChanged: true }, logging: {} } }
+    { capabilities: { tools: { listChanged: true }, resources: {}, logging: {} } }
   );
+
+  mcpServer.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: state.specDocs.flatMap((spec) => [
+      {
+        uri: `openapi://${spec.name}/spec`,
+        name: `${spec.title} ${spec.version} OpenAPI document`,
+        description: `Dereferenced OpenAPI document for ${spec.title} (${spec.path})`,
+        mimeType: "application/json"
+      },
+      {
+        uri: `openapi://${spec.name}/tools`,
+        name: `${spec.title} ${spec.version} tool index`,
+        description: `Tool name, method, path, and description for every tool compiled from ${spec.title}`,
+        mimeType: "application/json"
+      }
+    ])
+  }));
+
+  mcpServer.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    for (const spec of state.specDocs) {
+      if (uri === `openapi://${spec.name}/spec`) {
+        return {
+          contents: [{ uri, mimeType: "application/json", text: JSON.stringify(spec.doc, null, 2) }]
+        };
+      }
+      if (uri === `openapi://${spec.name}/tools`) {
+        const index = spec.toolNames
+          .map((name) => state.operations.get(name))
+          .filter((op): op is OperationModel => Boolean(op))
+          .filter((op) => isToolAllowed(op, cli.runtime))
+          .map((op) => ({
+            name: op.operationId,
+            method: op.method,
+            path: op.pathTemplate,
+            description: op.toolDescription,
+            ...(op.tags ? { tags: op.tags } : {})
+          }));
+        return {
+          contents: [{ uri, mimeType: "application/json", text: JSON.stringify(index, null, 2) }]
+        };
+      }
+    }
+    throw new McpError(ErrorCode.InvalidParams, `Unknown resource: ${uri}`);
+  });
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async (request) => {
     const sortedTools = [...state.operations.values()]
@@ -554,6 +611,7 @@ function wireSpecWatcher(specs: SpecRef[], cli: CliOptions, state: RuntimeState,
         const next = await loadRuntimeState(specs, cli.serverUrl, cli.cachePath, cli.compile);
         state.operations = next.operations;
         state.validators = next.validators;
+        state.specDocs = next.specDocs;
         await onReload();
       } catch (error) {
         process.stderr.write(`Spec reload failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -577,6 +635,7 @@ function deriveSpecName(spec: SpecRef, separator?: string): string {
 async function loadRuntimeState(specs: SpecRef[], serverUrl: string | undefined, cachePath: string, compile: CompileOptions): Promise<RuntimeState> {
   const sep = compile.toolNameSeparator ?? "_";
   const merged = new Map<string, OperationModel>();
+  const specDocs: SpecResource[] = [];
 
   for (const spec of specs) {
     const specPath = resolve(spec.path);
@@ -596,6 +655,7 @@ async function loadRuntimeState(specs: SpecRef[], serverUrl: string | undefined,
     const specCachePath = specs.length === 1 ? cachePath : `${cachePath}.${deriveSpecName(spec, sep)}`;
     const operations = await compileDocumentWithCache(doc, specPath, serverUrl, specCachePath, compile);
 
+    const toolNames: string[] = [];
     for (const operation of operations.values()) {
       const baseName =
         specs.length === 1
@@ -608,11 +668,28 @@ async function loadRuntimeState(specs: SpecRef[], serverUrl: string | undefined,
         toolName = normalizeToolName(`${baseName}${sep}${suffix}`, sep);
       }
       merged.set(toolName, { ...operation, operationId: toolName });
+      toolNames.push(toolName);
     }
+
+    const info = isObject((doc as Record<string, unknown>).info) ? ((doc as Record<string, unknown>).info as Record<string, unknown>) : {};
+    let specName = deriveSpecName(spec, sep);
+    let nameSuffix = 1;
+    while (specDocs.some((existing) => existing.name === specName)) {
+      nameSuffix += 1;
+      specName = `${deriveSpecName(spec, sep)}${sep}${nameSuffix}`;
+    }
+    specDocs.push({
+      name: specName,
+      path: spec.path,
+      title: typeof info.title === "string" ? info.title : specName,
+      version: typeof info.version === "string" ? info.version : "0.0.0",
+      doc,
+      toolNames
+    });
   }
 
   const validators = buildValidators(merged);
-  return { operations: merged, validators };
+  return { operations: merged, validators, specDocs };
 }
 
 function buildValidators(operations: Map<string, OperationModel>): CompiledValidators {
