@@ -5,7 +5,12 @@
 
 Turn an OpenAPI 3.x spec into an MCP server. Each operation becomes an MCP tool; tool calls are validated, proxied to the upstream REST API, and the response is validated against the spec's response schemas.
 
-> **Package name: `@evalops/mcp-openapi`.** The unscoped `mcp-openapi` package on the npm registry is an unrelated third-party project. Install this project from GitHub (`npm install github:evalops/mcp-openapi`) or from npm under the scoped name once a tagged release has been published.
+> **Package name: `@evalops/mcp-openapi`.** The unscoped `mcp-openapi` package on the npm registry is an unrelated third-party project.
+
+```bash
+npm install @evalops/mcp-openapi     # from npm
+npm install github:evalops/mcp-openapi   # from source
+```
 
 ## Quickstart
 
