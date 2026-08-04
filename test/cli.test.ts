@@ -64,3 +64,38 @@ test("init command creates Gate scaffold files", async () => {
   assert.match(gateConnector, /endpoint_path: "\/mcp"/);
   assert.match(gateConnector, /dir: "\.\.\/\.data\/gate-mcp-recordings"/);
 });
+
+test("unknown CLI arguments are rejected", async () => {
+  const result = spawnSync(
+    process.execPath,
+    [tsxCli, "src/server.ts", "--spec", "test/fixtures/sample-openapi.yaml", "--allow-host", "example.com"],
+    { cwd: process.cwd(), encoding: "utf8" }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown argument: --allow-host/);
+});
+
+test("--version prints the package version", async () => {
+  const result = spawnSync(process.execPath, [tsxCli, "src/server.ts", "--version"], {
+    cwd: process.cwd(),
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+$/);
+});
+
+test("scaffolds depend on the GitHub source, not the unrelated npm package", async () => {
+  const outDir = await mkdtemp(resolve(tmpdir(), "mcp-openapi-dep-"));
+  const result = spawnSync(process.execPath, [tsxCli, "src/server.ts", "init", outDir], {
+    cwd: process.cwd(),
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0);
+  const packageJson = JSON.parse(await readFile(resolve(outDir, "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  assert.equal(packageJson.dependencies["mcp-openapi"], "github:evalops/mcp-openapi");
+});

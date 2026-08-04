@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { basename, resolve } from "node:path";
+import { timingSafeEqual } from "node:crypto";
 import { mkdir, readFile as readFileAsync, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { watch } from "node:fs";
@@ -35,6 +36,7 @@ import { observeLatency, observeStatus, renderPrometheus, metrics } from "./metr
 import type { CompileOptions, OperationModel, RuntimeOptions } from "./types.js";
 import { zodFromJsonSchema } from "./zod-schema.js";
 import { compileDocumentWithCache } from "./compile-cache.js";
+import { isToolAllowed } from "./policy.js";
 import { lintOpenApiDocument } from "./lint.js";
 import { loadOpenApiDocument } from "./openapi.js";
 import yaml from "js-yaml";
@@ -70,7 +72,38 @@ interface CliOptions {
   watchSpec: boolean;
   transport: "stdio" | "streamable-http" | "sse";
   port: number;
+  host: string;
+  allowedOrigins: string[];
   runtime: RuntimeOptions;
+}
+
+// Browser requests carry an Origin header; validating it prevents DNS-rebinding
+// attacks against locally bound HTTP transports. Non-browser MCP clients send no
+// Origin and are unaffected. Localhost origins are always accepted.
+function isOriginAllowed(origin: string | undefined, allowedOrigins: string[]): boolean {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  try {
+    const parsed = new URL(origin);
+    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function httpAuthToken(): string | undefined {
+  const token = process.env.MCP_OPENAPI_HTTP_AUTH_TOKEN;
+  return token && token.trim() ? token : undefined;
+}
+
+function isAuthorized(authorizationHeader: string | undefined): boolean {
+  const required = httpAuthToken();
+  if (!required) return true;
+  if (!authorizationHeader?.startsWith("Bearer ")) return false;
+  const presented = Buffer.from(authorizationHeader.slice("Bearer ".length));
+  const expected = Buffer.from(required);
+  if (presented.length !== expected.length) return false;
+  return timingSafeEqual(presented, expected);
 }
 
 let inFlightCalls = 0;
@@ -332,9 +365,9 @@ async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: st
   app.use(
     "*",
     cors({
-      origin: "*",
+      origin: (origin) => (isOriginAllowed(origin, cli.allowedOrigins) ? origin : ""),
       allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "mcp-session-id", "Last-Event-ID", "mcp-protocol-version"],
+      allowHeaders: ["Content-Type", "Authorization", "mcp-session-id", "Last-Event-ID", "mcp-protocol-version"],
       exposeHeaders: ["mcp-session-id", "mcp-protocol-version"]
     })
   );
@@ -346,6 +379,12 @@ async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: st
   app.get("/test/sse", (c) => c.html(SSE_TEST_HTML));
 
   app.all("/mcp", async (c) => {
+    if (!isOriginAllowed(c.req.header("origin"), cli.allowedOrigins)) {
+      return c.json({ error: "Origin not allowed" }, 403);
+    }
+    if (!isAuthorized(c.req.header("authorization"))) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
     const transport = new WebStandardStreamableHTTPServerTransport();
     const server = createMcpServer(state, cli);
     await server.connect(transport);
@@ -358,13 +397,13 @@ async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: st
     });
   }
 
-  const server = serve({ fetch: app.fetch, port: cli.port });
+  const server = serve({ fetch: app.fetch, port: cli.port, hostname: cli.host });
   process.stderr.write(
-    `Listening on http://localhost:${cli.port} (${cli.transport})\n` +
-      `Health: http://localhost:${cli.port}/health\n` +
-      `Metrics: http://localhost:${cli.port}/metrics\n` +
-      `Streamable Test: http://localhost:${cli.port}/test/streamable\n` +
-      `SSE Test: http://localhost:${cli.port}/test/sse\n`
+    `Listening on http://${cli.host}:${cli.port} (${cli.transport})\n` +
+      `Health: http://${cli.host}:${cli.port}/health\n` +
+      `Metrics: http://${cli.host}:${cli.port}/metrics\n` +
+      `Streamable Test: http://${cli.host}:${cli.port}/test/streamable\n` +
+      `SSE Test: http://${cli.host}:${cli.port}/test/sse\n`
   );
 
   wireGracefulShutdown(async () => {
@@ -408,6 +447,20 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
       return;
     }
 
+    if ((url.pathname === "/sse" || url.pathname === "/messages") && !isOriginAllowed(req.headers.origin, cli.allowedOrigins)) {
+      res.statusCode = 403;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "Origin not allowed" }));
+      return;
+    }
+
+    if ((url.pathname === "/sse" || url.pathname === "/messages") && !isAuthorized(req.headers.authorization)) {
+      res.statusCode = 401;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/sse") {
       if (transports.size >= cli.runtime.sseMaxSessions) {
         res.statusCode = 503;
@@ -435,7 +488,7 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
 
       evictExpiredSseSessions(transports, cli.runtime.sseSessionTtlMs);
 
-      const stored = transports.get(sessionId) ?? (transports.size === 1 ? [...transports.values()][0] : undefined);
+      const stored = transports.get(sessionId);
       if (!stored) {
         res.statusCode = 404;
         res.setHeader("content-type", "application/json");
@@ -463,7 +516,7 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
     wireSpecWatcher(specPath, cli, state, async () => {});
   }
 
-  server.listen(cli.port);
+  server.listen(cli.port, cli.host);
   wireGracefulShutdown(async () => {
     for (const entry of transports.values()) {
       await entry.transport.close();
@@ -471,10 +524,10 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
     server.close();
   });
   process.stderr.write(
-    `Listening on http://localhost:${cli.port} (sse)\\n` +
-      `Health: http://localhost:${cli.port}/health\\n` +
-      `Metrics: http://localhost:${cli.port}/metrics\\n` +
-      `SSE Test: http://localhost:${cli.port}/test/sse\\n`
+    `Listening on http://${cli.host}:${cli.port} (sse)\n` +
+      `Health: http://${cli.host}:${cli.port}/health\n` +
+      `Metrics: http://${cli.host}:${cli.port}/metrics\n` +
+      `SSE Test: http://${cli.host}:${cli.port}/test/sse\n`
   );
 
   await new Promise(() => undefined);
@@ -552,6 +605,7 @@ async function sendLog(server: Server, level: LoggingLevel, data: unknown, sessi
 }
 
 function redactSecrets(data: unknown): unknown {
+  if (Array.isArray(data)) return data.map((item) => redactSecrets(item));
   if (!isObject(data)) return data;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
@@ -584,7 +638,8 @@ async function scaffoldProject(targetDir: string): Promise<void> {
       check: "tsc -p tsconfig.json --noEmit"
     },
     dependencies: {
-      "mcp-openapi": "latest"
+      // The npm package named "mcp-openapi" is an unrelated third-party project; install from GitHub.
+      "mcp-openapi": "github:evalops/mcp-openapi"
     },
     devDependencies: {
       "@types/node": "^22.13.4",
@@ -684,32 +739,6 @@ function asObject(value: unknown): Record<string, unknown> {
   return isObject(value) ? (value as Record<string, unknown>) : { value };
 }
 
-function isToolAllowed(operation: OperationModel, runtime: RuntimeOptions): boolean {
-  if (runtime.allowedMethods.length > 0 && !runtime.allowedMethods.includes(operation.method.toUpperCase())) {
-    return false;
-  }
-
-  if (runtime.allowedPathPrefixes.length > 0 && !runtime.allowedPathPrefixes.some((prefix) => operation.pathTemplate.startsWith(prefix))) {
-    return false;
-  }
-
-  if (runtime.allowToolPatterns.length > 0 && !runtime.allowToolPatterns.some((pattern) => minimatch(operation.operationId, pattern))) {
-    return false;
-  }
-
-  if (runtime.denyToolPatterns.some((pattern) => minimatch(operation.operationId, pattern))) {
-    return false;
-  }
-
-  return true;
-}
-
-function minimatch(value: string, pattern: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
-  const re = new RegExp(`^${escaped}$`);
-  return re.test(value);
-}
-
 async function loadResponseTransform(modulePath: string): Promise<(ctx: { operation: OperationModel; response: { body: unknown; status: number } }) => unknown | Promise<unknown>> {
   const loaded = (await import(resolve(modulePath))) as Record<string, unknown>;
   const fn = (typeof loaded.default === "function" ? loaded.default : loaded.transform) as unknown;
@@ -776,7 +805,7 @@ async function generateProjectFromSpec(targetDir: string, specPath: string, oper
           build: "tsc -p tsconfig.json",
           start: "node dist/server.js"
         },
-        dependencies: { "mcp-openapi": "latest" },
+        dependencies: { "mcp-openapi": "github:evalops/mcp-openapi" },
         devDependencies: { typescript: "^5.7.3", tsx: "^4.20.3", "@types/node": "^22.13.4" }
       },
       null,
@@ -960,6 +989,8 @@ function parseArgs(argv: string[]): CliOptions {
   let toolNameSeparator: string | undefined;
   let transport: CliOptions["transport"] = "stdio";
   let port = 3000;
+  let host = "127.0.0.1";
+  let allowedOrigins: string[] = [];
   let timeoutMs = 20_000;
   let retries = 2;
   let retryDelayMs = 500;
@@ -989,6 +1020,8 @@ function parseArgs(argv: string[]): CliOptions {
       watchSpec,
       transport,
       port,
+      host,
+      allowedOrigins,
       runtime: {
         timeoutMs,
         retries,
@@ -1111,6 +1144,14 @@ function parseArgs(argv: string[]): CliOptions {
       port = parsePositiveInt(argv[++i], "--port");
       continue;
     }
+    if (arg === "--host") {
+      host = argv[++i] ?? host;
+      continue;
+    }
+    if (arg === "--allow-origins") {
+      allowedOrigins = parseCsv(argv[++i]);
+      continue;
+    }
     if (arg === "--watch-spec") {
       watchSpec = true;
       continue;
@@ -1150,6 +1191,11 @@ function parseArgs(argv: string[]): CliOptions {
       printHelp();
       process.exit(0);
     }
+    if (arg === "--version" || arg === "-v") {
+      process.stdout.write(`${PKG_VERSION}\n`);
+      process.exit(0);
+    }
+    throw new Error(`Unknown argument: ${arg}. Run with --help for usage.`);
   }
 
   if (!specPath) {
@@ -1170,6 +1216,8 @@ function parseArgs(argv: string[]): CliOptions {
     watchSpec,
     transport,
     port,
+    host,
+    allowedOrigins,
     runtime: {
       timeoutMs,
       retries,
@@ -1231,6 +1279,8 @@ function printHelp(): void {
       "  --validate-spec",
       "  --transport stdio|streamable-http|sse",
       "  --port <n>",
+      "  --host <address>                 bind address for web transports (default: 127.0.0.1)",
+      "  --allow-origins o1,o2            extra allowed Origin values for web transports (localhost always allowed)",
       "  --watch-spec",
       "  --timeout-ms <ms>",
       "  --retries <n>",
@@ -1250,6 +1300,10 @@ function printHelp(): void {
       "  --auth-scope <mapping>           tag=PREFIX pairs (e.g. governance=GOV,meter=METER)",
       "  --policy-webhook <url>           URL for policy webhook (fail-closed)",
       "  --tool-name-separator <char>     separator for tool names (default: _)",
+      "  --version, -v                    print version and exit",
+      "",
+      "Transport env vars:",
+      "  MCP_OPENAPI_HTTP_AUTH_TOKEN      if set, /mcp, /sse, /messages require Authorization: Bearer <token>",
       "",
       "Auth env vars:",
       "  MCP_OPENAPI_API_KEY",
