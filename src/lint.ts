@@ -145,11 +145,16 @@ function collectBrokenInternalRefDiagnostics(
   value: unknown,
   root: Record<string, unknown>,
   diagnostics: LintDiagnostic[],
-  location = "$"
+  location = "$",
+  visited: WeakSet<object> = new WeakSet()
 ): void {
   if (Array.isArray(value)) {
+    if (visited.has(value)) {
+      return;
+    }
+    visited.add(value);
     for (let index = 0; index < value.length; index += 1) {
-      collectBrokenInternalRefDiagnostics(value[index], root, diagnostics, `${location}[${index}]`);
+      collectBrokenInternalRefDiagnostics(value[index], root, diagnostics, `${location}[${index}]`, visited);
     }
     return;
   }
@@ -157,6 +162,13 @@ function collectBrokenInternalRefDiagnostics(
   if (!isObject(value)) {
     return;
   }
+
+  // Dereferenced documents with recursive $refs are cyclic; each node is
+  // visited once.
+  if (visited.has(value)) {
+    return;
+  }
+  visited.add(value);
 
   const record = value as Record<string, unknown>;
   const ref = typeof record["$ref"] === "string" ? record["$ref"] : undefined;
@@ -170,7 +182,7 @@ function collectBrokenInternalRefDiagnostics(
   }
 
   for (const [key, child] of Object.entries(record)) {
-    collectBrokenInternalRefDiagnostics(child, root, diagnostics, `${location}.${key}`);
+    collectBrokenInternalRefDiagnostics(child, root, diagnostics, `${location}.${key}`, visited);
   }
 }
 

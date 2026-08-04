@@ -43,9 +43,20 @@ export function observeLatency(ms: number): void {
   metrics.latencyBuckets.le_inf += 1;
 }
 
+let buildVersion = "0.0.0";
+const startedAtMs = Date.now();
+
+export function setBuildInfo(version: string): void {
+  buildVersion = version;
+}
+
 export function renderPrometheus(): string {
   const avgLatency = metrics.toolCallsTotal > 0 ? metrics.toolCallLatencyMsTotal / metrics.toolCallsTotal : 0;
   return [
+    "# TYPE mcp_openapi_build_info gauge",
+    `mcp_openapi_build_info{version="${buildVersion}"} 1`,
+    "# TYPE mcp_openapi_uptime_seconds gauge",
+    `mcp_openapi_uptime_seconds ${Math.floor((Date.now() - startedAtMs) / 1000)}`,
     "# TYPE mcp_openapi_tool_calls_total counter",
     `mcp_openapi_tool_calls_total ${metrics.toolCallsTotal}`,
     "# TYPE mcp_openapi_tool_calls_failed_total counter",

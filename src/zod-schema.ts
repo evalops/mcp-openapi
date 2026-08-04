@@ -102,7 +102,9 @@ function convertSchema(schema: unknown, seen: WeakMap<object, ZodTypeAny>): ZodT
       const props = isObject(s.properties) ? (s.properties as Record<string, unknown>) : {};
       const required = Array.isArray(s.required) ? new Set(s.required.filter((x): x is string => typeof x === "string")) : new Set<string>();
 
-      const shape: Record<string, ZodTypeAny> = {};
+      // Null prototype: a "__proto__" property name assigned to a plain object
+      // would replace the shape's prototype and silently skip validation.
+      const shape: Record<string, ZodTypeAny> = Object.create(null);
       for (const [key, value] of Object.entries(props)) {
         const inner = convertSchema(value, seen);
         shape[key] = required.has(key) ? inner : inner.optional();
