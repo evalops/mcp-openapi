@@ -34,7 +34,7 @@ import {
 import { executeOperation } from "./http.js";
 import { STREAMABLE_TEST_HTML, SSE_TEST_HTML } from "./html.js";
 import { paginateWithCursor } from "./pagination.js";
-import { observeLatency, observeStatus, renderPrometheus, metrics } from "./metrics.js";
+import { observeLatency, observeStatus, renderPrometheus, setBuildInfo, metrics } from "./metrics.js";
 import type { CompileOptions, OperationModel, RuntimeOptions } from "./types.js";
 import { zodFromJsonSchema } from "./zod-schema.js";
 import { compileDocumentWithCache } from "./compile-cache.js";
@@ -128,6 +128,7 @@ let inFlightCalls = 0;
 let responseTransform: ((ctx: { operation: OperationModel; response: { body: unknown; status: number } }) => unknown | Promise<unknown>) | undefined;
 
 async function main(): Promise<void> {
+  setBuildInfo(PKG_VERSION);
   const cli = parseArgs(process.argv.slice(2));
 
   if (cli.command === "init") {
@@ -214,7 +215,7 @@ function createMcpServer(state: RuntimeState, cli: CliOptions): Server {
     for (const spec of state.specDocs) {
       if (uri === `openapi://${spec.name}/spec`) {
         return {
-          contents: [{ uri, mimeType: "application/json", text: JSON.stringify(spec.doc, null, 2) }]
+          contents: [{ uri, mimeType: "application/json", text: safeJsonStringify(spec.doc, 2) }]
         };
       }
       if (uri === `openapi://${spec.name}/tools`) {
@@ -1508,6 +1509,29 @@ async function checkPolicyWebhook(webhookUrl: string, operation: OperationModel,
 
 function isObject(value: unknown): value is object {
   return value !== null && typeof value === "object";
+}
+
+// Dereferenced documents with recursive $refs contain object cycles;
+// back-references are rendered as the string "[Circular]".
+function safeJsonStringify(value: unknown, indent?: number): string {
+  const ancestors: object[] = [];
+  return JSON.stringify(
+    value,
+    function (this: unknown, _key: string, val: unknown) {
+      if (typeof val !== "object" || val === null) {
+        return val;
+      }
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) {
+        ancestors.pop();
+      }
+      if (ancestors.includes(val)) {
+        return "[Circular]";
+      }
+      ancestors.push(val);
+      return val;
+    },
+    indent
+  );
 }
 
 main().catch((error) => {

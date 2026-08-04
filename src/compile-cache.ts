@@ -61,9 +61,14 @@ export async function compileDocumentWithCache(
     operations: [...operations.values()]
   };
 
-  const abs = resolve(cachePath);
-  await mkdir(dirname(abs), { recursive: true });
-  await writeFile(abs, JSON.stringify(entry), "utf8");
+  // The cache is an optimization; a spec that cannot be cached must still serve.
+  try {
+    const abs = resolve(cachePath);
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, JSON.stringify(entry), "utf8");
+  } catch (error) {
+    process.stderr.write(`Compile cache write skipped: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 
   return operations;
 }

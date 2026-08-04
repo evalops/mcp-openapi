@@ -168,7 +168,7 @@ export default function transform({ operation, response }) {
 
 ## Observability
 
-`/metrics` serves Prometheus text format: `mcp_openapi_tool_calls_total`, `_failed_total`, `_cancelled_total`, `_in_flight`, `_by_status_total{status}`, `mcp_openapi_retries_total`, `mcp_openapi_tool_call_latency_avg_ms`, and a latency histogram `mcp_openapi_tool_call_latency_ms_bucket`. Tool call start/completion and retry events are also emitted as MCP logging notifications.
+`/metrics` serves Prometheus text format: `mcp_openapi_build_info{version}`, `mcp_openapi_uptime_seconds`, `mcp_openapi_tool_calls_total`, `_failed_total`, `_cancelled_total`, `_in_flight`, `_by_status_total{status}`, `mcp_openapi_retries_total`, `mcp_openapi_tool_call_latency_avg_ms`, and a latency histogram `mcp_openapi_tool_call_latency_ms_bucket`. Tool call start/completion and retry events are also emitted as MCP logging notifications.
 
 ## Library usage
 

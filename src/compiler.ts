@@ -343,7 +343,7 @@ function buildInputSchema(parameters: ParameterSpec[], bodySchema?: JsonSchema):
       continue;
     }
 
-    const groupProperties: Record<string, JsonSchema> = {};
+    const groupProperties: Record<string, JsonSchema> = Object.create(null);
     const groupRequired: string[] = [];
     for (const param of items) {
       groupProperties[param.name] = param.schema ?? { type: "string" };
@@ -537,43 +537,58 @@ function pickContentWithSchema(content: Record<string, unknown>): { contentType:
 }
 
 function normalizeJsonSchema(schema: JsonSchema): JsonSchema {
-  return normalizeNode(schema, new WeakMap<object, unknown>()) as JsonSchema;
+  return normalizeNode(schema, new WeakMap<object, unknown>(), new WeakSet<object>()) as JsonSchema;
 }
 
-function normalizeNode<T>(node: T, seen: WeakMap<object, unknown>): T {
+function normalizeNode<T>(node: T, seen: WeakMap<object, unknown>, ancestors: WeakSet<object>): T {
   if (!isObject(node)) {
     return node;
+  }
+
+  // A node that contains itself (recursive $ref after dereferencing) cannot be
+  // JSON-serialized or compiled by AJV; cut the back-reference to the
+  // permissive empty schema. Non-cyclic reuse of shared subschemas is kept.
+  if (ancestors.has(node)) {
+    return {} as T;
   }
 
   if (seen.has(node)) {
     return seen.get(node) as T;
   }
 
-  if (Array.isArray(node)) {
-    const arr: unknown[] = [];
-    seen.set(node, arr);
-    for (const item of node) {
-      arr.push(normalizeNode(item, seen));
+  ancestors.add(node);
+  try {
+    if (Array.isArray(node)) {
+      const arr: unknown[] = [];
+      for (const item of node) {
+        arr.push(normalizeNode(item, seen, ancestors));
+      }
+      seen.set(node, arr);
+      return arr as T;
     }
-    return arr as T;
-  }
 
-  const source = node as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  seen.set(node, out);
+    const source = node as Record<string, unknown>;
+    // Null prototype: schema keys are attacker-controlled and a "__proto__"
+    // key assigned to a plain object mutates its prototype instead of
+    // defining a property.
+    const out: Record<string, unknown> = Object.create(null);
 
-  for (const [key, value] of Object.entries(source)) {
-    if (key === "nullable") {
-      continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (key === "nullable") {
+        continue;
+      }
+      out[key] = normalizeNode(value, seen, ancestors);
     }
-    out[key] = normalizeNode(value, seen);
-  }
 
-  if (source.nullable === true) {
-    applyNullable(out);
-  }
+    if (source.nullable === true) {
+      applyNullable(out);
+    }
 
-  return out as T;
+    seen.set(node, out);
+    return out as T;
+  } finally {
+    ancestors.delete(node);
+  }
 }
 
 function applyNullable(schema: Record<string, unknown>): void {
