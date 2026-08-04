@@ -97,5 +97,5 @@ test("scaffolds depend on the GitHub source, not the unrelated npm package", asy
   const packageJson = JSON.parse(await readFile(resolve(outDir, "package.json"), "utf8")) as {
     dependencies: Record<string, string>;
   };
-  assert.equal(packageJson.dependencies["mcp-openapi"], "github:evalops/mcp-openapi");
+  assert.equal(packageJson.dependencies["@evalops/mcp-openapi"], "github:evalops/mcp-openapi");
 });

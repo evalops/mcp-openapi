@@ -5,7 +5,7 @@
 
 Turn an OpenAPI 3.x spec into an MCP server. Each operation becomes an MCP tool; tool calls are validated, proxied to the upstream REST API, and the response is validated against the spec's response schemas.
 
-> **Install from GitHub.** The `mcp-openapi` package on the npm registry is an unrelated third-party project. This project is installed as `github:evalops/mcp-openapi`.
+> **Package name: `@evalops/mcp-openapi`.** The unscoped `mcp-openapi` package on the npm registry is an unrelated third-party project. Install this project from GitHub (`npm install github:evalops/mcp-openapi`) or from npm under the scoped name once a tagged release has been published.
 
 ## Quickstart
 
@@ -151,7 +151,7 @@ export default function transform({ operation, response }) {
 ## Library usage
 
 ```ts
-import { parseSpec, generateToolsWithTags } from "mcp-openapi";
+import { parseSpec, generateToolsWithTags } from "@evalops/mcp-openapi";
 
 const spec = await parseSpec("./openapi.yaml");
 const { tools } = generateToolsWithTags(spec, { prefix: "github" });
