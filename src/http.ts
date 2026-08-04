@@ -255,36 +255,41 @@ function applyQueryParams(url: URL, specs: ParameterSpec[], queryParams: Record<
     const spec = byName.get(name);
     const style = spec?.style ?? "form";
     const explode = spec?.explode ?? true;
-    serializeQueryParam(url.searchParams, name, value, style, explode, Boolean(spec?.allowReserved));
+    serializeQueryParam(url, name, value, style, explode, Boolean(spec?.allowReserved));
   }
 }
 
-function serializeQueryParam(searchParams: URLSearchParams, name: string, value: unknown, style: string, explode: boolean, allowReserved: boolean): void {
-  const encode = (v: string) => (allowReserved ? v : encodeURIComponent(v));
+// Values are appended raw; URLSearchParams percent-encodes once at serialization time.
+// allowReserved params bypass URLSearchParams so reserved characters survive as-is.
+function serializeQueryParam(url: URL, name: string, value: unknown, style: string, explode: boolean, allowReserved: boolean): void {
+  const append = (key: string, raw: string) => {
+    if (allowReserved) appendRawQueryPair(url, key, raw);
+    else url.searchParams.append(key, raw);
+  };
 
   if (style === "deepObject" && isObject(value)) {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      searchParams.append(`${name}[${k}]`, String(v));
+      append(`${name}[${k}]`, String(v));
     }
     return;
   }
 
   if (Array.isArray(value)) {
     if (style === "spaceDelimited") {
-      searchParams.append(name, value.map((v) => encode(String(v))).join(" "));
+      append(name, value.map((v) => String(v)).join(" "));
       return;
     }
     if (style === "pipeDelimited") {
-      searchParams.append(name, value.map((v) => encode(String(v))).join("|"));
+      append(name, value.map((v) => String(v)).join("|"));
       return;
     }
     if (explode) {
       for (const item of value) {
-        searchParams.append(name, encode(String(item)));
+        append(name, String(item));
       }
       return;
     }
-    searchParams.append(name, value.map((v) => encode(String(v))).join(","));
+    append(name, value.map((v) => String(v)).join(","));
     return;
   }
 
@@ -292,15 +297,21 @@ function serializeQueryParam(searchParams: URLSearchParams, name: string, value:
     const entries = Object.entries(value as Record<string, unknown>);
     if (explode) {
       for (const [k, v] of entries) {
-        searchParams.append(k, encode(String(v)));
+        append(k, String(v));
       }
       return;
     }
-    searchParams.append(name, entries.flatMap(([k, v]) => [k, String(v)]).map((x) => encode(x)).join(","));
+    append(name, entries.flatMap(([k, v]) => [k, String(v)]).join(","));
     return;
   }
 
-  searchParams.append(name, encode(String(value)));
+  append(name, String(value));
+}
+
+function appendRawQueryPair(url: URL, name: string, rawValue: string): void {
+  const existing = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  const pair = `${encodeURIComponent(name)}=${rawValue}`;
+  url.search = existing ? `${existing}&${pair}` : pair;
 }
 
 function applyHeaderParams(headers: Record<string, string>, specs: ParameterSpec[], headerParams: Record<string, unknown>): void {
@@ -443,7 +454,7 @@ async function applyAuth(headers: Record<string, string>, url: URL, cookieParams
         keyByName ??
         process.env[`${envPrefix}OAUTH2_ACCESS_TOKEN`] ??
         process.env[`${envPrefix}BEARER_TOKEN`] ??
-        (await getOAuth2AccessToken(scheme));
+        (await getOAuth2AccessToken(scheme, envPrefix));
       if (token) headers.authorization = `Bearer ${token}`;
       continue;
     }
@@ -455,16 +466,16 @@ async function applyAuth(headers: Record<string, string>, url: URL, cookieParams
   }
 }
 
-async function getOAuth2AccessToken(scheme: SecurityScheme): Promise<string | undefined> {
+async function getOAuth2AccessToken(scheme: SecurityScheme, envPrefix: string = "MCP_OPENAPI_"): Promise<string | undefined> {
   if (!scheme.tokenUrl) return undefined;
 
-  const cacheKey = `${scheme.name}:${scheme.tokenUrl}`;
+  const cacheKey = `${envPrefix}:${scheme.name}:${scheme.tokenUrl}`;
   const cached = oauthTokenCache.get(cacheKey);
   if (cached && cached.expiresAtMs > Date.now() + 15_000) return cached.accessToken;
 
-  const clientId = process.env[`MCP_OPENAPI_${scheme.name.toUpperCase()}_CLIENT_ID`] ?? process.env.MCP_OPENAPI_OAUTH2_CLIENT_ID;
+  const clientId = process.env[`${envPrefix}${scheme.name.toUpperCase()}_CLIENT_ID`] ?? process.env[`${envPrefix}OAUTH2_CLIENT_ID`];
   const clientSecret =
-    process.env[`MCP_OPENAPI_${scheme.name.toUpperCase()}_CLIENT_SECRET`] ?? process.env.MCP_OPENAPI_OAUTH2_CLIENT_SECRET;
+    process.env[`${envPrefix}${scheme.name.toUpperCase()}_CLIENT_SECRET`] ?? process.env[`${envPrefix}OAUTH2_CLIENT_SECRET`];
   if (!clientId || !clientSecret) return undefined;
 
   const scope = Object.keys(scheme.scopes ?? {}).join(" ");
@@ -628,7 +639,7 @@ async function parseResponseBody(response: Response, maxBytes: number): Promise<
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json") || contentType.includes("+json")) {
     const text = await response.text();
-    enforceSize(text.length, maxBytes);
+    enforceSize(Buffer.byteLength(text, "utf8"), maxBytes);
     return JSON.parse(text);
   }
 
@@ -639,7 +650,7 @@ async function parseResponseBody(response: Response, maxBytes: number): Promise<
   }
 
   const text = await response.text();
-  enforceSize(text.length, maxBytes);
+  enforceSize(Buffer.byteLength(text, "utf8"), maxBytes);
   return text;
 }
 

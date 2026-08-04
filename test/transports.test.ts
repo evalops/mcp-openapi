@@ -28,10 +28,17 @@ async function waitForHealth(port: number): Promise<void> {
   throw new Error("Server did not become healthy");
 }
 
-function startWebServer(transport: "streamable-http" | "sse", specPath: string, apiBase: string, port: number): ChildProcessWithoutNullStreams {
+function startWebServer(
+  transport: "streamable-http" | "sse",
+  specPath: string,
+  apiBase: string,
+  port: number,
+  env: Record<string, string> = {}
+): ChildProcessWithoutNullStreams {
   const child = spawn(process.execPath, ["dist/server.js", "--spec", specPath, "--server-url", apiBase, "--transport", transport, "--port", String(port)], {
     cwd: process.cwd(),
-    stdio: "pipe"
+    stdio: "pipe",
+    env: { ...process.env, ...env }
   });
   return child;
 }
@@ -123,6 +130,70 @@ test("sse transport integration", async () => {
       assert.equal((result.structuredContent as Record<string, unknown>).message, "sse");
 
       await transport.close();
+    } finally {
+      child.kill("SIGTERM");
+      await sleep(100);
+    }
+  });
+});
+
+test("streamable-http rejects non-local origins and enforces bearer auth when configured", async () => {
+  await withApiServer(async (apiBase) => {
+    const port = await getFreePort();
+    const child = startWebServer("streamable-http", "test/fixtures/sample-openapi.yaml", apiBase, port, {
+      MCP_OPENAPI_HTTP_AUTH_TOKEN: "test-token"
+    });
+
+    try {
+      await waitForHealth(port);
+      const base = `http://127.0.0.1:${port}/mcp`;
+      const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+      const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+
+      const badOrigin = await fetch(base, {
+        method: "POST",
+        headers: { ...headers, origin: "http://evil.example", authorization: "Bearer test-token" },
+        body
+      });
+      assert.equal(badOrigin.status, 403);
+
+      const noAuth = await fetch(base, { method: "POST", headers, body });
+      assert.equal(noAuth.status, 401);
+
+      const wrongAuth = await fetch(base, { method: "POST", headers: { ...headers, authorization: "Bearer wrong" }, body });
+      assert.equal(wrongAuth.status, 401);
+
+      const goodAuth = await fetch(base, { method: "POST", headers: { ...headers, authorization: "Bearer test-token" }, body });
+      assert.notEqual(goodAuth.status, 401);
+      assert.notEqual(goodAuth.status, 403);
+      await goodAuth.body?.cancel();
+    } finally {
+      child.kill("SIGTERM");
+      await sleep(100);
+    }
+  });
+});
+
+test("sse endpoints reject non-local origins", async () => {
+  await withApiServer(async (apiBase) => {
+    const port = await getFreePort();
+    const child = startWebServer("sse", "test/fixtures/sample-openapi.yaml", apiBase, port);
+
+    try {
+      await waitForHealth(port);
+
+      const badOrigin = await fetch(`http://127.0.0.1:${port}/sse`, {
+        headers: { origin: "http://evil.example" }
+      });
+      assert.equal(badOrigin.status, 403);
+      await badOrigin.body?.cancel();
+
+      const badMessages = await fetch(`http://127.0.0.1:${port}/messages?sessionId=none`, {
+        method: "POST",
+        headers: { origin: "http://evil.example", "content-type": "application/json" },
+        body: "{}"
+      });
+      assert.equal(badMessages.status, 403);
     } finally {
       child.kill("SIGTERM");
       await sleep(100);

@@ -372,3 +372,58 @@ test("executeOperation respects cancellation signal", async () => {
 
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 });
+
+test("executeOperation encodes query values exactly once", async () => {
+  let rawUrl = "";
+  let decodedValue: string | null = null;
+  const server = createServer((req, res) => {
+    rawUrl = req.url ?? "";
+    decodedValue = new URL(rawUrl, "http://localhost").searchParams.get("q");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const parameters: ParameterSpec[] = [{ name: "q", in: "query", required: false }];
+  const result = await executeOperation(
+    createOperation(baseUrl, { parameters }),
+    { query: { q: "a b&c=d" } },
+    { timeoutMs: 5000, retries: 0, retryDelayMs: 5 }
+  );
+
+  await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+
+  assert.equal(result.status, 200);
+  assert.equal(decodedValue, "a b&c=d");
+  assert.ok(!rawUrl.includes("%25"), `expected no double-encoding, got ${rawUrl}`);
+});
+
+test("executeOperation preserves reserved characters for allowReserved params", async () => {
+  let rawUrl = "";
+  const server = createServer((req, res) => {
+    rawUrl = req.url ?? "";
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const parameters: ParameterSpec[] = [{ name: "filter", in: "query", required: false, allowReserved: true }];
+  const result = await executeOperation(
+    createOperation(baseUrl, { parameters }),
+    { query: { filter: "a/b:c,d" } },
+    { timeoutMs: 5000, retries: 0, retryDelayMs: 5 }
+  );
+
+  await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+
+  assert.equal(result.status, 200);
+  assert.ok(rawUrl.includes("filter=a/b:c,d"), `expected raw reserved characters, got ${rawUrl}`);
+});
