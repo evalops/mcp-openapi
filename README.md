@@ -62,6 +62,17 @@ mcp-openapi --spec github=./github.yaml --spec linear=./linear.yaml
 - `tools/list` is cursor-paginated at 50 tools per page and emits `listChanged` when `--watch-spec` reloads the spec.
 - `x-mcp-hidden: true` on an operation removes it. `x-mcp-description` overrides the tool description, then `--descriptions` file entries, then `summary`/`description`.
 
+## MCP resources
+
+The server exposes two read-only resources per loaded spec, so clients can introspect the API without extra tooling:
+
+| URI | Content |
+|---|---|
+| `openapi://<spec-name>/spec` | The full dereferenced OpenAPI document, JSON |
+| `openapi://<spec-name>/tools` | `[{ name, method, path, description, tags }]` for every compiled tool, filtered by the active tool policy |
+
+`<spec-name>` is the `--spec name=` value or the spec file's basename (`openapi://sample-openapi/spec` for `sample-openapi.yaml`).
+
 ## Transports
 
 | Transport | Flag | Endpoints |
