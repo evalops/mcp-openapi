@@ -290,7 +290,7 @@ function getOperationId(
   return id;
 }
 
-function normalizeToolName(name: string, separator: string = "_"): string {
+export function normalizeToolName(name: string, separator: string = "_"): string {
   const allowedSep = separator === "." ? "." : "_";
   const pattern = allowedSep === "." ? /[^a-zA-Z0-9_.-]+/g : /[^a-zA-Z0-9_-]+/g;
   const cleaned = name.replace(pattern, "_").replace(/^[_.-]+|[_.-]+$/g, "");

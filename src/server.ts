@@ -37,6 +37,7 @@ import type { CompileOptions, OperationModel, RuntimeOptions } from "./types.js"
 import { zodFromJsonSchema } from "./zod-schema.js";
 import { compileDocumentWithCache } from "./compile-cache.js";
 import { isToolAllowed } from "./policy.js";
+import { normalizeToolName } from "./compiler.js";
 import { lintOpenApiDocument } from "./lint.js";
 import { loadOpenApiDocument } from "./openapi.js";
 import yaml from "js-yaml";
@@ -59,11 +60,16 @@ interface RuntimeState {
   validators: CompiledValidators;
 }
 
+interface SpecRef {
+  name?: string;
+  path: string;
+}
+
 interface CliOptions {
   command: "run" | "init" | "generate";
   initDir?: string;
   generateDir?: string;
-  specPath: string;
+  specs: SpecRef[];
   serverUrl?: string;
   cachePath: string;
   compile: CompileOptions;
@@ -119,22 +125,28 @@ async function main(): Promise<void> {
   }
 
   if (cli.command === "generate") {
-    const specPath = resolve(cli.specPath);
-    const state = await loadRuntimeState(specPath, cli.serverUrl, cli.cachePath, cli.compile);
+    if (cli.specs.length !== 1) {
+      throw new Error("generate requires exactly one --spec");
+    }
+    const specPath = resolve(cli.specs[0].path);
+    const state = await loadRuntimeState(cli.specs, cli.serverUrl, cli.cachePath, cli.compile);
     await generateProjectFromSpec(cli.generateDir ?? resolve(process.cwd(), "generated-mcp-server"), specPath, state.operations, cli);
     process.stderr.write(`Generated project in ${resolve(cli.generateDir ?? resolve(process.cwd(), "generated-mcp-server"))}\n`);
     return;
   }
 
-  const specPath = resolve(cli.specPath);
-  const state: RuntimeState = await loadRuntimeState(specPath, cli.serverUrl, cli.cachePath, cli.compile);
+  const state: RuntimeState = await loadRuntimeState(cli.specs, cli.serverUrl, cli.cachePath, cli.compile);
 
   if (cli.runtime.responseTransformModule) {
     responseTransform = await loadResponseTransform(cli.runtime.responseTransformModule);
   }
 
   if (cli.validateSpec) {
-    process.stdout.write(`Spec valid. Compiled ${state.operations.size} tools.\n`);
+    process.stdout.write(
+      cli.specs.length === 1
+        ? `Spec valid. Compiled ${state.operations.size} tools.\n`
+        : `Specs valid. Compiled ${state.operations.size} tools from ${cli.specs.length} specs.\n`
+    );
     return;
   }
 
@@ -149,7 +161,7 @@ async function main(): Promise<void> {
     const mcpServer = createMcpServer(state, cli);
 
     if (cli.watchSpec) {
-      wireSpecWatcher(specPath, cli, state, async () => {
+      wireSpecWatcher(cli.specs, cli, state, async () => {
         await mcpServer.sendToolListChanged();
       });
     }
@@ -159,7 +171,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await startWebServer(state, cli, specPath);
+  await startWebServer(state, cli);
 }
 
 function createMcpServer(state: RuntimeState, cli: CliOptions): Server {
@@ -355,9 +367,9 @@ function validateResponseByStatus(
   return ok ? undefined : validator.errors;
 }
 
-async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: string): Promise<void> {
+async function startWebServer(state: RuntimeState, cli: CliOptions): Promise<void> {
   if (cli.transport === "sse") {
-    await startSseServer(state, cli, specPath);
+    await startSseServer(state, cli);
     return;
   }
 
@@ -392,7 +404,7 @@ async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: st
   });
 
   if (cli.watchSpec) {
-    wireSpecWatcher(specPath, cli, state, async () => {
+    wireSpecWatcher(cli.specs, cli, state, async () => {
       // Stateless web transports rebuild handlers per request, no in-session update required.
     });
   }
@@ -413,7 +425,7 @@ async function startWebServer(state: RuntimeState, cli: CliOptions, specPath: st
   await new Promise(() => undefined);
 }
 
-async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: string): Promise<void> {
+async function startSseServer(state: RuntimeState, cli: CliOptions): Promise<void> {
   const transports = new Map<string, { transport: SSEServerTransport; createdAt: number }>();
 
   const server = createHttpServer(async (req, res) => {
@@ -513,7 +525,7 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
   });
 
   if (cli.watchSpec) {
-    wireSpecWatcher(specPath, cli, state, async () => {});
+    wireSpecWatcher(cli.specs, cli, state, async () => {});
   }
 
   server.listen(cli.port, cli.host);
@@ -533,13 +545,13 @@ async function startSseServer(state: RuntimeState, cli: CliOptions, specPath: st
   await new Promise(() => undefined);
 }
 
-function wireSpecWatcher(specPath: string, cli: CliOptions, state: RuntimeState, onReload: () => Promise<void>): void {
+function wireSpecWatcher(specs: SpecRef[], cli: CliOptions, state: RuntimeState, onReload: () => Promise<void>): void {
   let debounce: ReturnType<typeof setTimeout> | undefined;
-  watch(specPath, () => {
+  const reload = () => {
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(async () => {
       try {
-        const next = await loadRuntimeState(specPath, cli.serverUrl, cli.cachePath, cli.compile);
+        const next = await loadRuntimeState(specs, cli.serverUrl, cli.cachePath, cli.compile);
         state.operations = next.operations;
         state.validators = next.validators;
         await onReload();
@@ -547,24 +559,60 @@ function wireSpecWatcher(specPath: string, cli: CliOptions, state: RuntimeState,
         process.stderr.write(`Spec reload failed: ${error instanceof Error ? error.message : String(error)}\n`);
       }
     }, 200);
-  });
+  };
+  for (const spec of specs) {
+    watch(resolve(spec.path), reload);
+  }
 }
 
-async function loadRuntimeState(specPath: string, serverUrl: string | undefined, cachePath: string, compile: CompileOptions): Promise<RuntimeState> {
-  const doc = await loadOpenApiDocument(specPath);
-  const diagnostics = lintOpenApiDocument(doc, compile);
-  const errors = diagnostics.filter((d) => d.level === "error");
-  if (errors.length > 0) {
-    throw new Error(`OpenAPI lint failed:\n${errors.map((d) => `- [${d.code}] ${d.message}${d.location ? ` (${d.location})` : ""}`).join("\n")}`);
-  }
-  const warnings = diagnostics.filter((d) => d.level === "warning");
-  if (warnings.length > 0) {
-    process.stderr.write(`${warnings.map((d) => `Warning [${d.code}] ${d.message}${d.location ? ` (${d.location})` : ""}`).join("\n")}\n`);
+// With a single spec, tool names are the bare operationIds (unchanged behavior).
+// With multiple specs, every tool is prefixed with the spec's name (explicit
+// `--spec name=path` or the file's basename) so names are deterministic and
+// policy patterns keep working; remaining collisions get a numeric suffix.
+function deriveSpecName(spec: SpecRef, separator?: string): string {
+  const raw = spec.name ?? basename(spec.path).replace(/\.(yaml|yml|json)$/i, "");
+  return normalizeToolName(raw, separator);
+}
+
+async function loadRuntimeState(specs: SpecRef[], serverUrl: string | undefined, cachePath: string, compile: CompileOptions): Promise<RuntimeState> {
+  const sep = compile.toolNameSeparator ?? "_";
+  const merged = new Map<string, OperationModel>();
+
+  for (const spec of specs) {
+    const specPath = resolve(spec.path);
+    const doc = await loadOpenApiDocument(specPath);
+    const diagnostics = lintOpenApiDocument(doc, compile);
+    const errors = diagnostics.filter((d) => d.level === "error");
+    if (errors.length > 0) {
+      throw new Error(
+        `OpenAPI lint failed for ${spec.path}:\n${errors.map((d) => `- [${d.code}] ${d.message}${d.location ? ` (${d.location})` : ""}`).join("\n")}`
+      );
+    }
+    const warnings = diagnostics.filter((d) => d.level === "warning");
+    if (warnings.length > 0) {
+      process.stderr.write(`${warnings.map((d) => `Warning [${d.code}] ${d.message}${d.location ? ` (${d.location})` : ""}`).join("\n")}\n`);
+    }
+
+    const specCachePath = specs.length === 1 ? cachePath : `${cachePath}.${deriveSpecName(spec, sep)}`;
+    const operations = await compileDocumentWithCache(doc, specPath, serverUrl, specCachePath, compile);
+
+    for (const operation of operations.values()) {
+      const baseName =
+        specs.length === 1
+          ? operation.operationId
+          : normalizeToolName(`${deriveSpecName(spec, sep)}${sep}${operation.operationId}`, sep);
+      let toolName = baseName;
+      let suffix = 1;
+      while (merged.has(toolName)) {
+        suffix += 1;
+        toolName = normalizeToolName(`${baseName}${sep}${suffix}`, sep);
+      }
+      merged.set(toolName, { ...operation, operationId: toolName });
+    }
   }
 
-  const operations = await compileDocumentWithCache(doc, specPath, serverUrl, cachePath, compile);
-  const validators = buildValidators(operations);
-  return { operations, validators };
+  const validators = buildValidators(merged);
+  return { operations: merged, validators };
 }
 
 function buildValidators(operations: Map<string, OperationModel>): CompiledValidators {
@@ -975,7 +1023,7 @@ function parseArgs(argv: string[]): CliOptions {
   let command: CliOptions["command"] = "run";
   let initDir: string | undefined;
   let generateDir: string | undefined;
-  let specPath = "";
+  const specs: SpecRef[] = [];
   let serverUrl: string | undefined;
   let cachePath = ".cache/mcp-openapi-cache.json";
   let strict = false;
@@ -1011,7 +1059,7 @@ function parseArgs(argv: string[]): CliOptions {
     return {
       command,
       initDir,
-      specPath,
+      specs,
       serverUrl,
       cachePath,
       compile: { strict, toolNameTemplate, descriptionFile: descriptionsFile, toolNameSeparator },
@@ -1049,7 +1097,16 @@ function parseArgs(argv: string[]): CliOptions {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--spec") {
-      specPath = argv[++i] ?? "";
+      const value = argv[++i] ?? "";
+      if (!value) {
+        throw new Error("--spec requires a value: [name=]path");
+      }
+      const named = /^([A-Za-z0-9][A-Za-z0-9_-]*)=(.+)$/.exec(value);
+      if (named) {
+        specs.push({ name: named[1], path: named[2] });
+      } else {
+        specs.push({ path: value });
+      }
       continue;
     }
     if (arg === "--server-url") {
@@ -1198,16 +1255,20 @@ function parseArgs(argv: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}. Run with --help for usage.`);
   }
 
-  if (!specPath) {
+  if (specs.length === 0) {
     printHelp();
     throw new Error("Missing required argument: --spec <path-to-openapi-file>");
+  }
+
+  if (serverUrl && specs.length > 1) {
+    throw new Error("--server-url is only valid with a single --spec; per-spec URLs come from each spec's servers[]");
   }
 
   return {
     command,
     initDir,
     generateDir,
-    specPath,
+    specs,
     serverUrl,
     cachePath,
     compile: { strict, toolNameTemplate, descriptionFile: descriptionsFile, toolNameSeparator },
@@ -1270,7 +1331,8 @@ function printHelp(): void {
       "  mcp-openapi --spec <openapi-file> [options]",
       "",
       "Options:",
-      "  --server-url <url>",
+      "  --spec [name=]<file>             repeatable; with multiple specs each tool is prefixed with the spec name",
+      "  --server-url <url>               single --spec only",
       "  --cache-path <file>",
       "  --out-dir <dir>",
       "  --strict",

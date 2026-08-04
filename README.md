@@ -41,6 +41,17 @@ npx -y github:evalops/mcp-openapi --spec ./openapi.yaml --transport streamable-h
 # MCP endpoint: http://127.0.0.1:3000/mcp
 ```
 
+## Multiple specs
+
+`--spec` is repeatable. With more than one spec, every tool name is prefixed with the spec's name — given explicitly as `--spec name=path` or derived from the file's basename — so names stay deterministic and `--allow-tools`/`--deny-tools` patterns keep working. Remaining collisions get a numeric suffix. With a single spec, tool names are the bare operationIds, unchanged.
+
+```bash
+mcp-openapi --spec github=./github.yaml --spec linear=./linear.yaml
+# tools: github_listIssues, linear_createIssue, ...
+```
+
+`--server-url` is only valid with a single spec; with multiple specs each upstream URL comes from that spec's `servers[]`.
+
 ## How operations map to tools
 
 - One MCP tool per OpenAPI operation. Tool name defaults to `operationId`; missing IDs fall back to `method_path`. Collisions get a numeric suffix.
@@ -104,8 +115,8 @@ mcp-openapi generate --spec <openapi-file> [--out-dir ./generated]
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--spec <file>` | required | OpenAPI 3.x file, YAML or JSON |
-| `--server-url <url>` | spec `servers[0]` | Override upstream base URL |
+| `--spec [name=]<file>` | required, repeatable | OpenAPI 3.x file, YAML or JSON; multiple specs prefix tool names |
+| `--server-url <url>` | spec `servers[0]` | Override upstream base URL (single spec only) |
 | `--transport <t>` | `stdio` | `stdio`, `streamable-http`, or `sse` |
 | `--port <n>` | `3000` | Web transport port |
 | `--host <addr>` | `127.0.0.1` | Web transport bind address |
