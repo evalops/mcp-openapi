@@ -765,7 +765,7 @@ async function scaffoldProject(targetDir: string): Promise<void> {
     },
     dependencies: {
       // The npm package named "mcp-openapi" is an unrelated third-party project; this package is @evalops/mcp-openapi.
-      "@evalops/mcp-openapi": "github:evalops/mcp-openapi"
+      "@evalops/mcp-openapi": "^0.5.0"
     },
     devDependencies: {
       "@types/node": "^22.13.4",
@@ -931,7 +931,7 @@ async function generateProjectFromSpec(targetDir: string, specPath: string, oper
           build: "tsc -p tsconfig.json",
           start: "node dist/server.js"
         },
-        dependencies: { "@evalops/mcp-openapi": "github:evalops/mcp-openapi" },
+        dependencies: { "@evalops/mcp-openapi": "^0.5.0" },
         devDependencies: { typescript: "^5.7.3", tsx: "^4.20.3", "@types/node": "^22.13.4" }
       },
       null,
